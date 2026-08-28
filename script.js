@@ -724,6 +724,25 @@ function setupFadeDuration() {
   });
 }
 
+// Starts `deck` playing (if it wasn't already) and only begins the
+// crossfade animation once it's genuinely producing frames. Resuming a
+// paused YouTube embed can stall the page for a second or two while it
+// re-buffers; starting the fade's clock during that stall was making
+// every crossfade run longer than fadeState.seconds regardless of which
+// duration button was selected. Waiting here just shifts that stall to
+// before the fade starts instead of into the middle of it.
+function playThenAnimate(deck, targetPos, fader, onDone) {
+  if (!deck.isPlaying()) deck.play();
+  const waitReady = (attempt) => {
+    if (deck.isPlaying() || attempt >= 10) {
+      fader.animateTo(targetPos, fadeState.seconds * 1000, onDone);
+    } else {
+      setTimeout(() => waitReady(attempt + 1), 100);
+    }
+  };
+  waitReady(0);
+}
+
 // ---------- A/B quick-switch buttons ----------
 // Manually trigger the same crossfade Auto mode would do, at any time,
 // regardless of whether Auto is on. If the deck being switched to is
@@ -731,12 +750,10 @@ function setupFadeDuration() {
 // the play button when the deck isn't already going.
 function setupQuickSwitch(deckA, deckB, fader) {
   document.getElementById("fader-end-a").addEventListener("click", () => {
-    if (!deckA.isPlaying()) deckA.play();
-    fader.animateTo(0, fadeState.seconds * 1000);
+    playThenAnimate(deckA, 0, fader);
   });
   document.getElementById("fader-end-b").addEventListener("click", () => {
-    if (!deckB.isPlaying()) deckB.play();
-    fader.animateTo(1, fadeState.seconds * 1000);
+    playThenAnimate(deckB, 1, fader);
   });
 }
 
@@ -781,8 +798,7 @@ function setupAutoMode(deckA, deckB, fader) {
 
       if (active.isPlaying() && active.getRemainingTime() <= fadeState.seconds + 1) {
         transitioning = true;
-        other.play();
-        fader.animateTo(side === "A" ? 1 : 0, fadeState.seconds * 1000, () => {
+        playThenAnimate(other, side === "A" ? 1 : 0, fader, () => {
           transitioning = false;
         });
       }
