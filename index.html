@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DJ Mixer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="mixer">
+
+  <section class="deck" id="deck-a" data-deck="A">
+    <div class="url-row">
+      <input type="text" class="url-input" placeholder="Paste a YouTube video link...">
+      <button class="load-btn">Load</button>
+    </div>
+
+    <div class="deck-main">
+      <div class="player-wrap">
+        <div class="player" id="player-a"></div>
+      </div>
+
+      <div class="side-controls">
+        <button class="play-btn" disabled>▶</button>
+
+        <div class="knob-block">
+          <div class="knob" data-value="80">
+            <div class="knob-indicator"></div>
+          </div>
+          <div class="knob-label">Volume</div>
+          <div class="knob-value">80</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="now-playing">
+      <div class="now-title">No track loaded</div>
+      <div class="now-artist"></div>
+    </div>
+
+    <div class="progress-row">
+      <span class="time-elapsed">0:00</span>
+      <div class="progress-track">
+        <div class="progress-fill"></div>
+      </div>
+      <span class="time-remaining">-0:00</span>
+    </div>
+
+    <div class="url-row playlist-row">
+      <input type="text" class="playlist-input" placeholder="YouTube playlist link...">
+      <button class="load-btn playlist-load-btn">Playlist</button>
+    </div>
+
+    <div class="playlist-panel">
+      <ul class="playlist-list"></ul>
+    </div>
+  </section>
+
+  <div class="crossfader">
+    <div class="fader-end">A</div>
+    <div class="fader-track" id="fader-track">
+      <div class="fader-center-mark"></div>
+      <div class="fader-handle" id="fader-handle"></div>
+    </div>
+    <div class="fader-end">B</div>
+  </div>
+
+  <section class="deck" id="deck-b" data-deck="B">
+    <div class="url-row">
+      <input type="text" class="url-input" placeholder="Paste a YouTube video link...">
+      <button class="load-btn">Load</button>
+    </div>
+
+    <div class="deck-main">
+      <div class="player-wrap">
+        <div class="player" id="player-b"></div>
+      </div>
+
+      <div class="side-controls">
+        <button class="play-btn" disabled>▶</button>
+
+        <div class="knob-block">
+          <div class="knob" data-value="80">
+            <div class="knob-indicator"></div>
+          </div>
+          <div class="knob-label">Volume</div>
+          <div class="knob-value">80</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="now-playing">
+      <div class="now-title">No track loaded</div>
+      <div class="now-artist"></div>
+    </div>
+
+    <div class="progress-row">
+      <span class="time-elapsed">0:00</span>
+      <div class="progress-track">
+        <div class="progress-fill"></div>
+      </div>
+      <span class="time-remaining">-0:00</span>
+    </div>
+
+    <div class="url-row playlist-row">
+      <input type="text" class="playlist-input" placeholder="YouTube playlist link...">
+      <button class="load-btn playlist-load-btn">Playlist</button>
+    </div>
+
+    <div class="playlist-panel">
+      <ul class="playlist-list"></ul>
+    </div>
+  </section>
+
+</div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="script.js"></script>
+</body>
+</html>
