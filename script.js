@@ -251,13 +251,19 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
       }
 
       // First time this deck's playlist resolves, jump off the default
-      // index-0 track onto a random one (still just cued, not playing) so
-      // this deck doesn't start out on the same track as a deck that kept
-      // the default start.
+      // index-0 track onto a random one (still just cued, not playing),
+      // avoiding whatever the other deck already reserved for itself so
+      // the two decks don't start out on the same track.
       if (changed && !initialRandomizeApplied) {
         initialRandomizeApplied = true;
         if (list.length > 1 && loadedPlaylistId) {
-          const idx = 1 + Math.floor(Math.random() * (list.length - 1));
+          let idx = Math.floor(Math.random() * list.length);
+          let attempts = 0;
+          while (list[idx] === reservedInitialVideoId && attempts < 50) {
+            idx = Math.floor(Math.random() * list.length);
+            attempts++;
+          }
+          reservedInitialVideoId = list[idx];
           deck.player.cuePlaylist({ listType: "playlist", list: loadedPlaylistId, index: idx });
           showTrackInfo(list[idx]);
           return;
@@ -665,6 +671,13 @@ function setupCrossfader(deckA, deckB) {
   };
 }
 
+// Set by whichever deck resolves its initial random-start pick first, so
+// the other deck's initial pick (see setupDeck's randomizeInitial option)
+// can avoid landing on the same track. JS callbacks run to completion
+// without interleaving, so this simple shared slot is race-free even
+// though both decks' playlists usually resolve around the same time.
+let reservedInitialVideoId = null;
+
 // ---------- Crossfade duration ----------
 // Shared by Auto mode and the A/B quick-switch buttons below.
 const fadeState = { seconds: 2 };
@@ -761,7 +774,9 @@ function setupAutoMode(deckA, deckB, fader) {
 const DEFAULT_PLAYLIST_URL =
   "https://www.youtube.com/playlist?list=PLvrCIk7RXD2ZOJdsYjP8Q6Z5MkQ6LBdKw";
 
-const deckA = setupDeck(document.getElementById("deck-a"), "player-a", DEFAULT_PLAYLIST_URL);
+const deckA = setupDeck(document.getElementById("deck-a"), "player-a", DEFAULT_PLAYLIST_URL, {
+  randomizeInitial: true,
+});
 const deckB = setupDeck(document.getElementById("deck-b"), "player-b", DEFAULT_PLAYLIST_URL, {
   randomizeInitial: true,
 });
