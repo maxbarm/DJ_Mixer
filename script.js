@@ -93,6 +93,12 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   const timeElapsed = rootEl.querySelector(".time-elapsed");
   const timeRemaining = rootEl.querySelector(".time-remaining");
 
+  // Bumped whenever something else takes over playback (a manual play, a
+  // playlist click, cueRandomTrack picking again) so a stale cueRandomTrack
+  // retry/pause timer from an earlier pick knows to give up instead of
+  // pausing or overwriting whatever's playing now.
+  let cueToken = 0;
+
   const deck = {
     player: null,
     volume: 80,
@@ -213,6 +219,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
       li.appendChild(thumbImg);
       li.appendChild(meta);
       li.addEventListener("click", () => {
+        cueToken++; // this manual pick overrides any pending auto-cue
         if (deck.player) deck.player.playVideoAt(i);
       });
       playlistList.appendChild(li);
@@ -299,36 +306,54 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
 
   let displayedVideoId = null;
 
-  function updateNowPlaying(data) {
-    if (!data || !data.title) return;
-    const videoId = data.video_id || null;
+  // Shows title + artist for a known video id, using the oEmbed cache (the
+  // same source playlist rows use) as needed. Independent of the player's
+  // own getVideoData(), which stays empty for a while when a video is
+  // paused immediately after cueRandomTrack() starts it — pausing that
+  // early seems to cut the metadata fetch off before it lands.
+  function showTrackInfo(videoId) {
+    if (!videoId) return;
     displayedVideoId = videoId;
-    nowTitle.textContent = data.title;
-
-    // getVideoData().author is frequently blank; fall back to the cache /
-    // an oEmbed fetch (the same source playlist rows use for the artist).
-    if (data.author) {
-      nowArtist.textContent = data.author;
-      if (videoId && !trackInfoCache[videoId]) {
-        trackInfoCache[videoId] = { title: data.title, author: data.author };
-      }
-      return;
-    }
-    if (!videoId) {
-      nowArtist.textContent = "";
-      return;
-    }
     const cached = trackInfoCache[videoId];
     if (cached) {
+      nowTitle.textContent = cached.title;
       nowArtist.textContent = cached.author;
       return;
     }
+    nowTitle.textContent = "Loading...";
     nowArtist.textContent = "";
     fetchTrackInfo(videoId, (info) => {
       if (displayedVideoId === videoId) {
+        nowTitle.textContent = info.title;
         nowArtist.textContent = info.author;
       }
     });
+  }
+
+  function updateNowPlaying(data) {
+    const videoId = (data && data.video_id) || null;
+    if (!videoId) return;
+    if (data.title && data.author && !trackInfoCache[videoId]) {
+      trackInfoCache[videoId] = { title: data.title, author: data.author };
+    }
+    if (data.title) {
+      displayedVideoId = videoId;
+      nowTitle.textContent = data.title;
+      nowArtist.textContent = data.author || (trackInfoCache[videoId] || {}).author || "";
+      if (!data.author) {
+        const cached = trackInfoCache[videoId];
+        if (cached) {
+          nowArtist.textContent = cached.author;
+        } else {
+          fetchTrackInfo(videoId, (info) => {
+            if (displayedVideoId === videoId) nowArtist.textContent = info.author;
+          });
+        }
+      }
+      return;
+    }
+    // getVideoData() hasn't populated a title yet — fall back entirely.
+    showTrackInfo(videoId);
   }
 
   // ---- Player creation / loading ----
@@ -358,6 +383,12 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
         ) {
           playBtn.textContent = "▶";
         }
+        // Belt-and-suspenders for Auto mode: it normally cues the next
+        // track a beat *before* this fires (see setupAutoMode), but a
+        // delayed timer tick can miss that narrow window. Reacting to the
+        // real ENDED event as a backstop means even a missed poll gets
+        // corrected immediately — cueRandomTrack() is safe to call twice.
+        if (e.data === YT.PlayerState.ENDED && deck.onEnded) deck.onEnded();
         syncPlaylistFromPlayer(e.target);
       },
     };
@@ -433,6 +464,72 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
     }
   });
 
+  // ---- Used by Auto mode to drive this deck without a user click ----
+  deck.isPlaying = function () {
+    return (
+      !!deck.player &&
+      deck.player.getPlayerState &&
+      deck.player.getPlayerState() === YT.PlayerState.PLAYING
+    );
+  };
+
+  deck.getRemainingTime = function () {
+    if (!deck.player || !deck.player.getDuration) return Infinity;
+    const duration = deck.player.getDuration();
+    if (!duration) return Infinity;
+    return duration - deck.player.getCurrentTime();
+  };
+
+  // Set by Auto mode as a backstop — see the ENDED handling in onStateChange.
+  deck.onEnded = null;
+
+  // Cues a random track from this deck's own playlist (skipping the
+  // currently cued one when there's more than one to choose from), lets it
+  // actually play for a second — silently, since this deck is idle and its
+  // fader gain is 0 — and then pauses it, ready for play() later.
+  //
+  // Letting it really play first (rather than pausing instantly) matters
+  // two ways: it gives the YouTube widget time to populate real title/
+  // author metadata, and it doubles as a liveness check — a track blocked
+  // from embedding never reports a duration, so if that's still true after
+  // the wait, this tries a different pick instead of leaving the deck
+  // stuck silent at the next crossfade.
+  //
+  // Leaving it paused (rather than left playing) is also what lets a user
+  // swap in a specific track by clicking the playlist while Auto mode is
+  // still armed — see the cueToken guard below and in that click handler.
+  deck.cueRandomTrack = function () {
+    if (!deck.player || !deck.playlistIds.length) return false;
+    const myToken = ++cueToken;
+
+    const pickAndCue = () => {
+      if (myToken !== cueToken || !deck.player) return;
+      const currentIdx = deck.player.getPlaylistIndex ? deck.player.getPlaylistIndex() : -1;
+      let idx = Math.floor(Math.random() * deck.playlistIds.length);
+      if (deck.playlistIds.length > 1) {
+        while (idx === currentIdx) idx = Math.floor(Math.random() * deck.playlistIds.length);
+      }
+      deck.player.playVideoAt(idx);
+      showTrackInfo(deck.playlistIds[idx]);
+
+      setTimeout(() => {
+        if (myToken !== cueToken || !deck.player) return;
+        if (!deck.player.getDuration()) {
+          pickAndCue(); // never loaded — dead pick, try another
+        } else {
+          deck.player.pauseVideo();
+        }
+      }, 1000);
+    };
+    pickAndCue();
+    return true;
+  };
+
+  deck.play = function () {
+    cueToken++; // cancel any pending auto-cue pause/retry for this deck
+    if (deck.player) deck.player.playVideo();
+  };
+
   if (defaultPlaylistUrl) {
     playlistInput.value = defaultPlaylistUrl;
     loadPlaylistFromUrl(defaultPlaylistUrl);
@@ -448,8 +545,13 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
 function setupCrossfader(deckA, deckB) {
   const track = document.getElementById("fader-track");
   const handle = document.getElementById("fader-handle");
-  let pos = 0.5; // 0 = A end, 1 = B end
+  const deckAEl = document.getElementById("deck-a");
+  const deckBEl = document.getElementById("deck-b");
+  const endBtnA = document.getElementById("fader-end-a");
+  const endBtnB = document.getElementById("fader-end-b");
+  let pos = 0; // 0 = A end, 1 = B end; starts parked on A
   let dragging = false;
+  let animating = false; // true while Auto mode is driving the handle
 
   function clamp01(v) {
     return Math.max(0, Math.min(1, v));
@@ -463,6 +565,13 @@ function setupCrossfader(deckA, deckB) {
     const gainB = pos >= 0.5 ? 1 : clamp01(1 - (0.5 - pos) * 2);
     deckA.setFaderGain(gainA);
     deckB.setFaderGain(gainB);
+
+    // Highlight whichever side the fader currently favors.
+    const aIsFavored = pos <= 0.5;
+    deckAEl.classList.toggle("deck-active", aIsFavored);
+    deckBEl.classList.toggle("deck-active", !aIsFavored);
+    endBtnA.classList.toggle("active", aIsFavored);
+    endBtnB.classList.toggle("active", !aIsFavored);
   }
 
   function setPosFromClientY(clientY) {
@@ -474,6 +583,7 @@ function setupCrossfader(deckA, deckB) {
   }
 
   handle.addEventListener("pointerdown", (e) => {
+    if (animating) return;
     handle.setPointerCapture(e.pointerId);
     dragging = true;
     e.preventDefault();
@@ -490,11 +600,129 @@ function setupCrossfader(deckA, deckB) {
 
   // Clicking directly on the track jumps the handle straight to that point.
   track.addEventListener("pointerdown", (e) => {
-    if (e.target === handle) return;
+    if (animating || e.target === handle) return;
     setPosFromClientY(e.clientY);
   });
 
   render();
+
+  // Smoothly drives the handle to `target` (0-1) over `durationMs`, used by
+  // Auto mode to perform the crossfade instead of jumping instantly.
+  function animateTo(target, durationMs, onDone) {
+    animating = true;
+    const start = pos;
+    const startTime = performance.now();
+
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / durationMs);
+      pos = start + (target - start) * t;
+      render();
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        animating = false;
+        if (onDone) onDone();
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  return {
+    getPosition: () => pos,
+    animateTo,
+  };
+}
+
+// ---------- Crossfade duration ----------
+// Shared by Auto mode and the A/B quick-switch buttons below.
+const fadeState = { seconds: 2 };
+
+function setupFadeDuration() {
+  const fadeButtons = document.querySelectorAll(".fade-btn");
+  fadeButtons.forEach((b) => {
+    b.addEventListener("click", () => {
+      fadeState.seconds = Number(b.dataset.sec);
+      fadeButtons.forEach((x) => x.classList.toggle("active", x === b));
+    });
+  });
+}
+
+// ---------- A/B quick-switch buttons ----------
+// Manually trigger the same crossfade Auto mode would do, at any time,
+// regardless of whether Auto is on. If the deck being switched to is
+// currently paused, wake it up first — the button becomes the crossfade AND
+// the play button when the deck isn't already going.
+function setupQuickSwitch(deckA, deckB, fader) {
+  document.getElementById("fader-end-a").addEventListener("click", () => {
+    if (!deckA.isPlaying()) deckA.play();
+    fader.animateTo(0, fadeState.seconds * 1000);
+  });
+  document.getElementById("fader-end-b").addEventListener("click", () => {
+    if (!deckB.isPlaying()) deckB.play();
+    fader.animateTo(1, fadeState.seconds * 1000);
+  });
+}
+
+// ---------- Auto mode ----------
+// While enabled: watches whichever deck the crossfader currently favors and
+// starts the crossfade `fadeState.seconds + 1` before that track ends — one
+// second earlier than the fade itself needs, so the outgoing track keeps
+// playing (now inaudible, gain already at 0) for a full second past the end
+// of the fade instead of cutting off right as it finishes.
+//
+// Separately, ANY deck within CUE_LEAD_SECONDS of its own natural end gets a
+// fresh random pick cued from its own playlist, then paused a second later —
+// parked and ready for its next turn. Triggering this slightly *before* the
+// real end (rather than waiting for it) matters: a cued YouTube playlist
+// auto-advances to its next video the instant one truly ends, and that
+// happens inside the iframe faster than we could react to it — so cueing a
+// half-second early is what lets our own pick usually win instead of theirs.
+// deck.onEnded (wired below) is the backstop for when a delayed poll tick
+// still loses that race. Either way, a user can click a specific track in
+// that deck's playlist to swap out the random pick any time before its next
+// turn comes around.
+function setupAutoMode(deckA, deckB, fader) {
+  const btn = document.getElementById("auto-btn");
+  const CUE_LEAD_SECONDS = 0.8;
+  let enabled = false;
+  let transitioning = false;
+
+  deckA.onEnded = () => {
+    if (enabled) deckA.cueRandomTrack();
+  };
+  deckB.onEnded = () => {
+    if (enabled) deckB.cueRandomTrack();
+  };
+
+  function poll() {
+    if (!enabled) return;
+
+    if (!transitioning) {
+      const side = fader.getPosition() <= 0.5 ? "A" : "B";
+      const active = side === "A" ? deckA : deckB;
+      const other = side === "A" ? deckB : deckA;
+
+      if (active.isPlaying() && active.getRemainingTime() <= fadeState.seconds + 1) {
+        transitioning = true;
+        other.play();
+        fader.animateTo(side === "A" ? 1 : 0, fadeState.seconds * 1000, () => {
+          transitioning = false;
+        });
+      }
+    }
+
+    [deckA, deckB].forEach((deck) => {
+      if (deck.isPlaying() && deck.getRemainingTime() <= CUE_LEAD_SECONDS) {
+        deck.cueRandomTrack();
+      }
+    });
+  }
+  setInterval(poll, 150);
+
+  btn.addEventListener("click", () => {
+    enabled = !enabled;
+    btn.classList.toggle("active", enabled);
+  });
 }
 
 const DEFAULT_PLAYLIST_URL =
@@ -502,4 +730,7 @@ const DEFAULT_PLAYLIST_URL =
 
 const deckA = setupDeck(document.getElementById("deck-a"), "player-a", DEFAULT_PLAYLIST_URL);
 const deckB = setupDeck(document.getElementById("deck-b"), "player-b", DEFAULT_PLAYLIST_URL);
-setupCrossfader(deckA, deckB);
+const fader = setupCrossfader(deckA, deckB);
+setupFadeDuration();
+setupQuickSwitch(deckA, deckB, fader);
+setupAutoMode(deckA, deckB, fader);

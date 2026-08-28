@@ -58,12 +58,22 @@
   </section>
 
   <div class="crossfader">
-    <div class="fader-end">A</div>
+    <button type="button" class="fader-end" id="fader-end-a" title="Crossfade to deck A">A</button>
     <div class="fader-track" id="fader-track">
       <div class="fader-center-mark"></div>
       <div class="fader-handle" id="fader-handle"></div>
     </div>
-    <div class="fader-end">B</div>
+    <button type="button" class="fader-end" id="fader-end-b" title="Crossfade to deck B">B</button>
+
+    <button class="auto-btn" id="auto-btn" title="Auto-mix between decks when a track is about to end">Auto</button>
+
+    <div class="fade-duration" id="fade-duration" title="Crossfade duration">
+      <button class="fade-btn" data-sec="1">1</button>
+      <button class="fade-btn active" data-sec="2">2</button>
+      <button class="fade-btn" data-sec="3">3</button>
+      <button class="fade-btn" data-sec="4">4</button>
+      <button class="fade-btn" data-sec="5">5</button>
+    </div>
   </div>
 
   <section class="deck" id="deck-b" data-deck="B">
