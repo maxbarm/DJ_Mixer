@@ -75,7 +75,8 @@ function formatTime(seconds) {
 }
 
 // ---------- Deck setup ----------
-function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
+function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
+  const randomizeInitial = !!(options && options.randomizeInitial);
   const urlInput = rootEl.querySelector(".url-input");
   const loadBtn = rootEl.querySelector(".load-btn");
   const playBtn = rootEl.querySelector(".play-btn");
@@ -98,6 +99,8 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   // retry/pause timer from an earlier pick knows to give up instead of
   // pausing or overwriting whatever's playing now.
   let cueToken = 0;
+  let loadedPlaylistId = null;
+  let initialRandomizeApplied = !randomizeInitial;
 
   const deck = {
     player: null,
@@ -246,6 +249,21 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
         deck.playlistIds = list;
         renderPlaylist();
       }
+
+      // First time this deck's playlist resolves, jump off the default
+      // index-0 track onto a random one (still just cued, not playing) so
+      // this deck doesn't start out on the same track as a deck that kept
+      // the default start.
+      if (changed && !initialRandomizeApplied) {
+        initialRandomizeApplied = true;
+        if (list.length > 1 && loadedPlaylistId) {
+          const idx = 1 + Math.floor(Math.random() * (list.length - 1));
+          deck.player.cuePlaylist({ listType: "playlist", list: loadedPlaylistId, index: idx });
+          showTrackInfo(list[idx]);
+          return;
+        }
+      }
+
       const idx = playerObj.getPlaylistIndex();
       if (typeof idx === "number" && idx >= 0) setActivePlaylistItem(idx);
     }
@@ -407,6 +425,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   }
 
   function loadPlaylist(playlistId) {
+    loadedPlaylistId = playlistId;
     if (deck.player) {
       deck.player.cuePlaylist({ listType: "playlist", list: playlistId });
     } else {
@@ -465,6 +484,10 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   });
 
   // ---- Used by Auto mode to drive this deck without a user click ----
+  deck.getCurrentVideoId = function () {
+    return displayedVideoId;
+  };
+
   deck.isPlaying = function () {
     return (
       !!deck.player &&
@@ -483,10 +506,12 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   // Set by Auto mode as a backstop — see the ENDED handling in onStateChange.
   deck.onEnded = null;
 
-  // Cues a random track from this deck's own playlist (skipping the
-  // currently cued one when there's more than one to choose from), lets it
-  // actually play for a second — silently, since this deck is idle and its
-  // fader gain is 0 — and then pauses it, ready for play() later.
+  // Cues a random track from this deck's own playlist — skipping the
+  // currently cued one, and skipping excludeVideoId when the caller passes
+  // the other deck's current track (see setupAutoMode) so the two decks
+  // never end up playing the same song — lets it actually play for a
+  // second — silently, since this deck is idle and its fader gain is 0 —
+  // and then pauses it, ready for play() later.
   //
   // Letting it really play first (rather than pausing instantly) matters
   // two ways: it gives the YouTube widget time to populate real title/
@@ -498,7 +523,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
   // Leaving it paused (rather than left playing) is also what lets a user
   // swap in a specific track by clicking the playlist while Auto mode is
   // still armed — see the cueToken guard below and in that click handler.
-  deck.cueRandomTrack = function () {
+  deck.cueRandomTrack = function (excludeVideoId) {
     if (!deck.player || !deck.playlistIds.length) return false;
     const myToken = ++cueToken;
 
@@ -507,7 +532,14 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl) {
       const currentIdx = deck.player.getPlaylistIndex ? deck.player.getPlaylistIndex() : -1;
       let idx = Math.floor(Math.random() * deck.playlistIds.length);
       if (deck.playlistIds.length > 1) {
-        while (idx === currentIdx) idx = Math.floor(Math.random() * deck.playlistIds.length);
+        let attempts = 0;
+        while (
+          (idx === currentIdx || deck.playlistIds[idx] === excludeVideoId) &&
+          attempts < 50
+        ) {
+          idx = Math.floor(Math.random() * deck.playlistIds.length);
+          attempts++;
+        }
       }
       deck.player.playVideoAt(idx);
       showTrackInfo(deck.playlistIds[idx]);
@@ -688,10 +720,10 @@ function setupAutoMode(deckA, deckB, fader) {
   let transitioning = false;
 
   deckA.onEnded = () => {
-    if (enabled) deckA.cueRandomTrack();
+    if (enabled) deckA.cueRandomTrack(deckB.getCurrentVideoId());
   };
   deckB.onEnded = () => {
-    if (enabled) deckB.cueRandomTrack();
+    if (enabled) deckB.cueRandomTrack(deckA.getCurrentVideoId());
   };
 
   function poll() {
@@ -711,11 +743,12 @@ function setupAutoMode(deckA, deckB, fader) {
       }
     }
 
-    [deckA, deckB].forEach((deck) => {
-      if (deck.isPlaying() && deck.getRemainingTime() <= CUE_LEAD_SECONDS) {
-        deck.cueRandomTrack();
-      }
-    });
+    if (deckA.isPlaying() && deckA.getRemainingTime() <= CUE_LEAD_SECONDS) {
+      deckA.cueRandomTrack(deckB.getCurrentVideoId());
+    }
+    if (deckB.isPlaying() && deckB.getRemainingTime() <= CUE_LEAD_SECONDS) {
+      deckB.cueRandomTrack(deckA.getCurrentVideoId());
+    }
   }
   setInterval(poll, 150);
 
@@ -729,7 +762,9 @@ const DEFAULT_PLAYLIST_URL =
   "https://www.youtube.com/playlist?list=PLvrCIk7RXD2ZOJdsYjP8Q6Z5MkQ6LBdKw";
 
 const deckA = setupDeck(document.getElementById("deck-a"), "player-a", DEFAULT_PLAYLIST_URL);
-const deckB = setupDeck(document.getElementById("deck-b"), "player-b", DEFAULT_PLAYLIST_URL);
+const deckB = setupDeck(document.getElementById("deck-b"), "player-b", DEFAULT_PLAYLIST_URL, {
+  randomizeInitial: true,
+});
 const fader = setupCrossfader(deckA, deckB);
 setupFadeDuration();
 setupQuickSwitch(deckA, deckB, fader);
