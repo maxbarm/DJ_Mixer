@@ -89,6 +89,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   const playlistLoadBtn = rootEl.querySelector(".playlist-load-btn");
   const playlistPanel = rootEl.querySelector(".playlist-panel");
   const playlistList = rootEl.querySelector(".playlist-list");
+  const selectAllToggle = rootEl.querySelector(".select-all-toggle");
   const progressTrack = rootEl.querySelector(".progress-track");
   const progressFill = rootEl.querySelector(".progress-fill");
   const timeElapsed = rootEl.querySelector(".time-elapsed");
@@ -106,7 +107,22 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
     volume: 80,
     faderGain: 1,
     playlistIds: [],
+    // Video ids unchecked in the playlist panel — excluded from random
+    // picks (initial load and Auto mode) but still playable by clicking
+    // them directly.
+    disabledIds: new Set(),
   };
+
+  // Indices into deck.playlistIds that are eligible for a random pick.
+  // Falls back to the whole list if the user has unchecked everything,
+  // rather than leaving the randomizer with nothing to choose from.
+  function enabledIndices() {
+    const indices = [];
+    for (let i = 0; i < deck.playlistIds.length; i++) {
+      if (!deck.disabledIds.has(deck.playlistIds[i])) indices.push(i);
+    }
+    return indices.length ? indices : deck.playlistIds.map((_, i) => i);
+  }
 
   function applyVolume() {
     if (deck.player && deck.player.setVolume) {
@@ -217,9 +233,24 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
       meta.appendChild(titleSpan);
       meta.appendChild(artistSpan);
 
+      // Checked by default — unchecking excludes this track from random
+      // picks (initial load + Auto mode) without affecting manual clicks.
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.className = "track-toggle";
+      toggle.title = "Include in random picks";
+      toggle.checked = !deck.disabledIds.has(videoId);
+      toggle.addEventListener("click", (e) => e.stopPropagation());
+      toggle.addEventListener("change", () => {
+        if (toggle.checked) deck.disabledIds.delete(videoId);
+        else deck.disabledIds.add(videoId);
+        updateSelectAllState();
+      });
+
       li.appendChild(idxSpan);
       li.appendChild(thumbImg);
       li.appendChild(meta);
+      li.appendChild(toggle);
       li.addEventListener("click", () => {
         cueToken++; // this manual pick overrides any pending auto-cue
         if (deck.player) deck.player.playVideoAt(i);
@@ -232,6 +263,31 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
           artistSpan.textContent = info.author;
         });
       }
+    });
+    updateSelectAllState();
+  }
+
+  // Gmail-style tri-state header checkbox: checked when every track is
+  // enabled, unchecked when none are, dashed (indeterminate) in between.
+  function updateSelectAllState() {
+    if (!selectAllToggle) return;
+    const total = deck.playlistIds.length;
+    const disabledCount = deck.playlistIds.reduce(
+      (n, id) => n + (deck.disabledIds.has(id) ? 1 : 0),
+      0
+    );
+    selectAllToggle.indeterminate = disabledCount > 0 && disabledCount < total;
+    selectAllToggle.checked = total > 0 && disabledCount === 0;
+  }
+
+  if (selectAllToggle) {
+    selectAllToggle.addEventListener("change", () => {
+      if (selectAllToggle.checked) {
+        deck.disabledIds.clear();
+      } else {
+        deck.playlistIds.forEach((id) => deck.disabledIds.add(id));
+      }
+      renderPlaylist();
     });
   }
 
@@ -286,10 +342,11 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
 
           const pickInitial = () => {
             if (myToken !== cueToken || !deck.player) return;
-            let idx = Math.floor(Math.random() * list.length);
+            const candidates = enabledIndices();
+            let idx = candidates[Math.floor(Math.random() * candidates.length)];
             let attempts = 0;
             while (list[idx] === reservedInitialVideoId && attempts < 50) {
-              idx = Math.floor(Math.random() * list.length);
+              idx = candidates[Math.floor(Math.random() * candidates.length)];
               attempts++;
             }
             reservedInitialVideoId = list[idx];
@@ -568,14 +625,15 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
     const pickAndCue = () => {
       if (myToken !== cueToken || !deck.player) return;
       const currentIdx = deck.player.getPlaylistIndex ? deck.player.getPlaylistIndex() : -1;
-      let idx = Math.floor(Math.random() * deck.playlistIds.length);
-      if (deck.playlistIds.length > 1) {
+      const candidates = enabledIndices();
+      let idx = candidates[Math.floor(Math.random() * candidates.length)];
+      if (candidates.length > 1) {
         let attempts = 0;
         while (
           (idx === currentIdx || deck.playlistIds[idx] === excludeVideoId) &&
           attempts < 50
         ) {
-          idx = Math.floor(Math.random() * deck.playlistIds.length);
+          idx = candidates[Math.floor(Math.random() * candidates.length)];
           attempts++;
         }
       }

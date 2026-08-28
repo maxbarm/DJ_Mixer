@@ -258,6 +258,31 @@ body {
   display: block;
 }
 
+.playlist-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #1a1723;
+  border-bottom: 1px solid #3a3548;
+  font-size: 11px;
+  color: #9d97b3;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.select-all-toggle {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0 0 0 auto;
+  accent-color: #7fd8ff;
+  cursor: pointer;
+}
+
 .playlist-list {
   list-style: none;
   margin: 0;
@@ -325,6 +350,15 @@ body {
 .playlist-item.active .artist {
   color: #7fd8ff;
   opacity: 0.75;
+}
+
+.playlist-item .track-toggle {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #7fd8ff;
+  cursor: pointer;
 }
 
 .crossfader {
