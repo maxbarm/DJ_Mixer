@@ -102,6 +102,11 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   let cueToken = 0;
   let initialRandomizeApplied = !randomizeInitial;
 
+  // Set while waiting for a manually-requested playlist load to actually
+  // take effect. See the staleness check in syncPlaylistFromPlayer.
+  let pendingPlaylistId = null;
+  let pendingRecueAttempts = 0;
+
   const deck = {
     player: null,
     volume: 80,
@@ -511,6 +516,8 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   }
 
   function loadSingleVideo(videoId) {
+    pendingPlaylistId = null;
+    pendingRecueAttempts = 0;
     deck.playlistIds = [];
     renderPlaylist();
     if (deck.player) {
@@ -521,11 +528,53 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   }
 
   function loadPlaylist(playlistId) {
+    pendingPlaylistId = playlistId;
+    pendingRecueAttempts = 0;
     if (deck.player) {
       deck.player.cuePlaylist({ listType: "playlist", list: playlistId });
+      watchForPlaylistRefresh(playlistId);
     } else {
       createPlayer({ listType: "playlist", list: playlistId });
     }
+  }
+
+  // Right after cuePlaylist() re-targets an *already-loaded* player at a
+  // different playlist, getPlaylist() can keep returning the previous
+  // playlist's tracks for several seconds even though getVideoData()
+  // already reports the new one — an IFrame API caching quirk. That's what
+  // made loading a new playlist need two clicks: the first click's stale
+  // data looked like nothing had happened, and the second cuePlaylist()
+  // call happened to force a refresh. Poll independently of onStateChange
+  // (re-issuing cuePlaylist from inside that event's own callback turned
+  // out not to trigger a fresh one — likely a postMessage reentrancy
+  // quirk) and force the same refresh automatically.
+  function watchForPlaylistRefresh(playlistId) {
+    setTimeout(() => {
+      if (pendingPlaylistId !== playlistId || !deck.player) return;
+      pendingRecueAttempts++;
+
+      const videoData = deck.player.getVideoData ? deck.player.getVideoData() : null;
+      const list = deck.player.getPlaylist ? deck.player.getPlaylist() : null;
+      const onTargetPlaylist = videoData && videoData.list === playlistId;
+      const looksStale =
+        onTargetPlaylist &&
+        list &&
+        list.length &&
+        deck.playlistIds.length > 0 &&
+        list.length === deck.playlistIds.length &&
+        list.every((id, i) => id === deck.playlistIds[i]);
+
+      if (onTargetPlaylist && !looksStale) {
+        pendingPlaylistId = null; // getPlaylist() has caught up — done
+        return;
+      }
+      if (pendingRecueAttempts >= 8) {
+        pendingPlaylistId = null; // give up; whatever loaded is what stays loaded
+        return;
+      }
+      if (looksStale) deck.player.cuePlaylist({ listType: "playlist", list: playlistId });
+      watchForPlaylistRefresh(playlistId);
+    }, 1000);
   }
 
   loadBtn.addEventListener("click", () => {
