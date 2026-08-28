@@ -102,10 +102,22 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   let cueToken = 0;
   let initialRandomizeApplied = !randomizeInitial;
 
+  // The video id most recently handed to playVideoAt/loadVideoById — kept
+  // so onError (below) knows which track just failed. getVideoData() often
+  // isn't populated yet by the time an error fires.
+  let lastRequestedVideoId = null;
+
   // Set while waiting for a manually-requested playlist load to actually
   // take effect. See the staleness check in syncPlaylistFromPlayer.
   let pendingPlaylistId = null;
   let pendingRecueAttempts = 0;
+  // The playlist actually showing right now (once a load resolves). Lets
+  // loadPlaylist tell "reloading the exact same playlist" apart from
+  // "switching to a different one" — the stale-vs-fresh heuristic in
+  // watchForPlaylistRefresh can't otherwise distinguish an identical
+  // reload from genuinely-still-cached old data, since both look like an
+  // unchanged track list.
+  let currentPlaylistId = null;
 
   const deck = {
     player: null,
@@ -116,6 +128,11 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
     // picks (initial load and Auto mode) but still playable by clicking
     // them directly.
     disabledIds: new Set(),
+    // Video ids YouTube reported as actually unplayable (removed, private,
+    // embedding disabled) via onError — still present in getPlaylist()'s
+    // data, but hidden entirely rather than just unchecked, since clicking
+    // one wouldn't play anything real anyway.
+    brokenIds: new Set(),
   };
 
   // Indices into deck.playlistIds that are eligible for a random pick.
@@ -124,9 +141,17 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   function enabledIndices() {
     const indices = [];
     for (let i = 0; i < deck.playlistIds.length; i++) {
-      if (!deck.disabledIds.has(deck.playlistIds[i])) indices.push(i);
+      const id = deck.playlistIds[i];
+      if (!deck.disabledIds.has(id) && !deck.brokenIds.has(id)) indices.push(i);
     }
-    return indices.length ? indices : deck.playlistIds.map((_, i) => i);
+    if (indices.length) return indices;
+    // Nothing eligible — fall back to anything not confirmed broken, and
+    // only to the truly full list if literally everything is broken.
+    const notBroken = [];
+    for (let i = 0; i < deck.playlistIds.length; i++) {
+      if (!deck.brokenIds.has(deck.playlistIds[i])) notBroken.push(i);
+    }
+    return notBroken.length ? notBroken : deck.playlistIds.map((_, i) => i);
   }
 
   function applyVolume() {
@@ -208,14 +233,18 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   function renderPlaylist() {
     playlistPanel.classList.toggle("has-items", deck.playlistIds.length > 0);
     playlistList.innerHTML = "";
+    let visibleCount = 0;
     deck.playlistIds.forEach((videoId, i) => {
+      if (deck.brokenIds.has(videoId)) return; // confirmed unplayable — hide entirely
+
       const li = document.createElement("li");
       li.className = "playlist-item";
-      li.dataset.index = String(i);
+      li.dataset.index = String(i); // real playlist index, used by playVideoAt/setActivePlaylistItem
 
+      visibleCount++;
       const idxSpan = document.createElement("span");
       idxSpan.className = "idx";
-      idxSpan.textContent = String(i + 1);
+      idxSpan.textContent = String(visibleCount); // gap-free display numbering
 
       const thumbImg = document.createElement("img");
       thumbImg.className = "thumb";
@@ -258,6 +287,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
       li.appendChild(toggle);
       li.addEventListener("click", () => {
         cueToken++; // this manual pick overrides any pending auto-cue
+        lastRequestedVideoId = videoId;
         if (deck.player) deck.player.playVideoAt(i);
       });
       playlistList.appendChild(li);
@@ -276,8 +306,9 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   // enabled, unchecked when none are, dashed (indeterminate) in between.
   function updateSelectAllState() {
     if (!selectAllToggle) return;
-    const total = deck.playlistIds.length;
-    const disabledCount = deck.playlistIds.reduce(
+    const visibleIds = deck.playlistIds.filter((id) => !deck.brokenIds.has(id));
+    const total = visibleIds.length;
+    const disabledCount = visibleIds.reduce(
       (n, id) => n + (deck.disabledIds.has(id) ? 1 : 0),
       0
     );
@@ -355,6 +386,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
               attempts++;
             }
             reservedInitialVideoId = list[idx];
+            lastRequestedVideoId = list[idx];
             deck.player.mute();
             deck.player.playVideoAt(idx);
             showTrackInfo(list[idx]);
@@ -510,6 +542,26 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
         if (e.data === YT.PlayerState.ENDED && deck.onEnded) deck.onEnded();
         syncPlaylistFromPlayer(e.target);
       },
+      // A track that's still listed in a cued playlist (per getPlaylist())
+      // can nonetheless fail to actually play — removed, private, or
+      // embedding disabled by its owner; YouTube's own "Video unavailable"
+      // overlay shows in that case, even though the track is gone from the
+      // playlist on YouTube's own site. Hide it from the panel entirely
+      // (brokenIds, checked in renderPlaylist/enabledIndices), exclude it
+      // from random picks, and swap in a replacement instead of leaving
+      // the deck stuck showing that error.
+      onError: () => {
+        const videoId = lastRequestedVideoId;
+        if (videoId && deck.playlistIds.includes(videoId)) {
+          deck.disabledIds.add(videoId);
+          deck.brokenIds.add(videoId);
+          renderPlaylist();
+        }
+        if (deck.playlistIds.length) {
+          if (deck.onEnded) deck.onEnded();
+          else deck.cueRandomTrack();
+        }
+      },
     };
 
     deck.player = new YT.Player(playerElId, config);
@@ -518,6 +570,8 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   function loadSingleVideo(videoId) {
     pendingPlaylistId = null;
     pendingRecueAttempts = 0;
+    currentPlaylistId = null;
+    lastRequestedVideoId = videoId;
     deck.playlistIds = [];
     renderPlaylist();
     if (deck.player) {
@@ -528,6 +582,17 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   }
 
   function loadPlaylist(playlistId) {
+    if (playlistId === currentPlaylistId) {
+      // Already showing this exact playlist — nothing to refresh, and
+      // re-cueing it would look identical to still-cached old data to the
+      // staleness heuristic below, sending it into needless retries.
+      // (loadPlaylistFromUrl normally short-circuits before ever getting
+      // here, but restore the panel too in case this is reached directly.)
+      pendingPlaylistId = null;
+      renderPlaylist();
+      return;
+    }
+    currentPlaylistId = playlistId;
     pendingPlaylistId = playlistId;
     pendingRecueAttempts = 0;
     if (deck.player) {
@@ -602,6 +667,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
       playlistList.innerHTML = '<li class="playlist-item">Invalid playlist link</li>';
       return;
     }
+    if (playlistId === currentPlaylistId) return; // already showing it
     playlistPanel.classList.add("has-items");
     playlistList.innerHTML = '<li class="playlist-item">Loading playlist...</li>';
     whenApiReady(() => loadPlaylist(playlistId));
@@ -686,6 +752,7 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
           attempts++;
         }
       }
+      lastRequestedVideoId = deck.playlistIds[idx];
       deck.player.playVideoAt(idx);
       showTrackInfo(deck.playlistIds[idx]);
 
