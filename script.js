@@ -99,7 +99,6 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   // retry/pause timer from an earlier pick knows to give up instead of
   // pausing or overwriting whatever's playing now.
   let cueToken = 0;
-  let loadedPlaylistId = null;
   let initialRandomizeApplied = !randomizeInitial;
 
   const deck = {
@@ -251,21 +250,55 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
       }
 
       // First time this deck's playlist resolves, jump off the default
-      // index-0 track onto a random one (still just cued, not playing),
-      // avoiding whatever the other deck already reserved for itself so
-      // the two decks don't start out on the same track.
+      // index-0 track onto a random one, avoiding whatever the other deck
+      // already reserved for itself so the two decks don't start out on
+      // the same track. Navigates with playVideoAt (muted, then paused a
+      // moment later) INSIDE the already-cued playlist rather than calling
+      // cuePlaylist a second time — an earlier version re-cued the whole
+      // playlist, which doubled each deck's playlist fetch and made the
+      // real-world (Vercel) load intermittently hang or take 30+ seconds.
       if (changed && !initialRandomizeApplied) {
         initialRandomizeApplied = true;
-        if (list.length > 1 && loadedPlaylistId) {
-          let idx = Math.floor(Math.random() * list.length);
-          let attempts = 0;
-          while (list[idx] === reservedInitialVideoId && attempts < 50) {
-            idx = Math.floor(Math.random() * list.length);
-            attempts++;
-          }
-          reservedInitialVideoId = list[idx];
-          deck.player.cuePlaylist({ listType: "playlist", list: loadedPlaylistId, index: idx });
-          showTrackInfo(list[idx]);
+        if (list.length > 1) {
+          const myToken = ++cueToken;
+
+          // Waits (in short steps, not one long one) for the pick to
+          // actually leave UNSTARTED before pausing it. Calling
+          // pauseVideo() while still UNSTARTED can wedge the player there
+          // permanently — pausing something that never truly started —
+          // which is what caused deck B to occasionally hang forever on
+          // page load. If it's still stuck after a few checks, abandon
+          // this pick and try a different track instead of waiting more.
+          const settle = (waitAttempt) => {
+            setTimeout(() => {
+              if (myToken !== cueToken || !deck.player) return;
+              const started = deck.player.getPlayerState() !== -1 && deck.player.getDuration();
+              if (started) {
+                deck.player.pauseVideo();
+                applyVolume(); // restores real mute state for this deck's gain
+              } else if (waitAttempt < 6) {
+                settle(waitAttempt + 1);
+              } else {
+                pickInitial();
+              }
+            }, 500);
+          };
+
+          const pickInitial = () => {
+            if (myToken !== cueToken || !deck.player) return;
+            let idx = Math.floor(Math.random() * list.length);
+            let attempts = 0;
+            while (list[idx] === reservedInitialVideoId && attempts < 50) {
+              idx = Math.floor(Math.random() * list.length);
+              attempts++;
+            }
+            reservedInitialVideoId = list[idx];
+            deck.player.mute();
+            deck.player.playVideoAt(idx);
+            showTrackInfo(list[idx]);
+            settle(0);
+          };
+          pickInitial();
           return;
         }
       }
@@ -431,7 +464,6 @@ function setupDeck(rootEl, playerElId, defaultPlaylistUrl, options) {
   }
 
   function loadPlaylist(playlistId) {
-    loadedPlaylistId = playlistId;
     if (deck.player) {
       deck.player.cuePlaylist({ listType: "playlist", list: playlistId });
     } else {
